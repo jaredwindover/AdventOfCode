@@ -18,6 +18,7 @@ main = do
       handleCommands (Just commands) =  do
         let (x, y, _) = foldl handleCommand (0, 0, 0) commands
         putStrLn $ show $ (x * y)
+
       handleCommand (x, y, aim) (Forward value) = (x + value, y + (value * aim), aim)
       handleCommand (x, y, aim) (Up value) = (x, y, aim - value)
       handleCommand (x, y, aim) (Down value) = (x, y, aim + value)
