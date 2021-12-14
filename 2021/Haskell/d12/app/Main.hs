@@ -6,4 +6,4 @@ main :: IO ()
 main = do
   input <- parseInput
   paths <- findPaths input
-  putStrLn $ show $ paths
+  putStrLn $ show $ length paths
