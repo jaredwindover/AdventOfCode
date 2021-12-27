@@ -25,6 +25,9 @@ readScanner input = do
       let [x, y, z] = map read $ splitOn "," s
       (x, y, z)
 
+manhattanDistance :: Vec3 -> Vec3 -> Int
+manhattanDistance (a,b,c) (a',b',c') = (abs (a - a')) + (abs (b - b')) + (abs (c - c'))
+
 distance :: Vec3 -> Vec3 -> Int
 distance (x, y, z) (a,b,c) = ((x-a) ^ 2) + ((y-b) ^ 2) + ((z-c) ^ 2)
 
@@ -181,22 +184,14 @@ makeMap :: [(Int, Int, (Set Vec3, Set Vec3))] -> Map (Int, Int) (Set Vec3, Set V
 makeMap xs = foldl (\m -> \(a,b, (l, r)) -> Data.Map.insert (b,a) (r, l)
                      $ Data.Map.insert (a,b) (l, r) m) Data.Map.empty xs
 
-accumulate' :: (Set Vec3, Set Vec3) -> [Vec3] -> IO [Vec3]
-accumulate' (commonOther, commonThis) vs = do
+accumulate' :: (Set Vec3, Set Vec3) -> Vec3 -> IO Vec3
+accumulate' (commonOther, commonThis) scannerSoFar = do
   mmbs <- mapM find $ elems fullRots
   -- putStrLn $ show mmbs
   let (m, a) = fromJust $ fromJust $ first isJust mmbs
   putStrLn $ "(Matrix, Affine): " ++ show (m, a)
-  let newVecs = map (\v -> sum3 a (rotate m v)) vs
-  putStrLn $ show $ length newVecs
-  putStrLn $ "This: " ++ show commonThis
-  putStrLn $ "Other: " ++ show commonOther
-  putStrLn $ show $ length $ intersection (Data.Set.fromList vs) commonThis
-  putStrLn $ show $ length $ intersection (Data.Set.fromList newVecs) commonOther
-  putStrLn $ show $ length $ intersection (Data.Set.fromList vs) commonOther
-  putStrLn $ show $ length $ intersection (Data.Set.fromList newVecs) commonThis
-  putStrLn $ show vs
-  return newVecs
+  let scannerSoFar' = sum3 a (rotate m scannerSoFar)
+  return scannerSoFar'
   where
     find :: Mat3 -> IO (Maybe (Mat3, Vec3))
     find rotmat = do
@@ -207,10 +202,10 @@ accumulate' (commonOther, commonThis) vs = do
 accumulate :: Map (Int, Int) (Set Vec3, Set Vec3) -> [[Vec3]] -> Set Vec3 -> (Int, [Int]) -> IO (Set Vec3)
 accumulate commonMap results sofar (k, p) = do
   putStrLn $ "Starting for" ++ show (k, p)
-  (_, newVecs) <- foldM folder (k, (results !! k)) p
-  return $ union (Data.Set.fromList newVecs) sofar
-  where folder (k', vSoFar) p' = do
-          r <- accumulate' (commonMap ! (k', p')) vSoFar
+  (_, scanner) <- foldM folder (k, (0, 0, 0)) p
+  return $ Data.Set.insert scanner sofar
+  where folder (k', scannerSoFar) p' = do
+          r <- accumulate' (commonMap ! (k', p')) scannerSoFar
           return $ (p', r)
 
 main :: IO ()
@@ -241,10 +236,11 @@ main = do
 
   scanners <- foldM (accumulate setMap results) Data.Set.empty $ assocs traversals
   -- in0Coords <- foldM (accumulate setMap results) Data.Set.empty $ assocs traversals
-  putStrLn $ show converted
+  let mx = maximum $ map (uncurry manhattanDistance) [(s0, s1) | s0 <- elems scanners, s1 <- elems scanners]
+  putStrLn $ show mx
   -- putStrLn $ show setMap
   -- putStrLn $ show in0Coords
-  putStrLn $ show $ length in0Coords
+  -- putStrLn $ show $ length in0Coords
 
   -- putStrLn $ show relations
   -- putStrLn $ show traversals

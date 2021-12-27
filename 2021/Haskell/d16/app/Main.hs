@@ -6,7 +6,7 @@ import Data.Bits (shift);
 import Data.Map (Map, alter, empty, (!?), fromList)
 import Data.Maybe (maybe, catMaybes, fromMaybe)
 import Data.List (splitAt)
-import Control.Monad
+import Control.Monad (join)
 import Lib
 
 type Matrix = [[Int]]
@@ -67,78 +67,146 @@ charToBin 'E' = [1,1,1,0]
 charToBin 'F' = [1,1,1,1]
 charToBin _ = [-1]
 
-type HandlePacket = Context -> Packet -> Context
-data Type = Type Int
-data Version = Version Int
-data Packet = Literal Version Int | Operator Version Type [Packet]
-data Length = Bits Int | Packets Int
-data Frame = Start |
-             ParseLiteral Version Type [Int] HandlePacket|
-             ParseOperator Version Type (Maybe Length) [Packet] HandlePacket
-data Context = [Packet]
-
-version :: Packet -> [Version]
-version (Literal v _) = [v]
-version (Operator v _ subs) = v: join $ map version subs
-
-update :: ([Frame], [Int], Context) -> ([Frame], [Int], Context)
-
-update (_, [], c) = ([], [], c)
-update ([], rest, c) = ([Start], rest, c)
-
-update (Start:xs, (a:b:c:d:e:f:rs), c) = do
-  let version = Version $ bin2dec [a,b,c]
-  let t = Type $ bin2dec [d,e,f]
-  let newFrame = if (t == Type 4)
-        then ParseLiteral verion t [] (c -> p -> c ++ [p])
-        else ParseOperator version t Nothing [] (c -> p -> c ++ [p])
-  (newFrame:xs, rs, c)
-
-update (Start:xs, _, c) = (xs, [], c)
-
-update ((ParseLiteral v t bs hpf):xs, rest, c) = do
-  let (i:a:b:c:d:rs) = rest
-  let bs' = bs ++ [a,b,c,d]
-  if (i == 0) then finishLiteral $ bin2dec bs' else ((ParseLiteral v t bs' hpf):xs, rs, c)
-    where
-      finishLiteral val = do
-        let packet = Literal v val
-        let c' = hpf c packet
-        (xs, rs, c')
-
-update ((ParseOperator v t Nothing _ hpf):xs, rest, c) = do
-  let (l, rs) = getLength rest
-  ((ParseOperator v t (Just l) [] hpf):xs, rest, c)
-
-update ((ParseOperator v t (Just (Bits l)) _ hpf):xs, rest, c) = do
-  let (ps, rs) = splitAt l rest
-  let packets = parse ps
-  let packet = Operator v t packets
-  let c'= hpf c packet
-  (xs, rs, c')
-
-update ((ParseOperator v t (Just (Packets 0)) soFar hpf):xs, rest, c) = do
-  let c'= hpf c soFar
-  (xs, rs, c')
-update ((ParseOperator v t (Just (Packets l)) soFar hpf):xs, rest, c) = do
-
-getLength :: [Int] -> (Length, [Int])
-getLength [] = (Bits 0, [])
-getLength 0:xs = do
+getLength :: [Int] -> (Length, Int, [Int])
+getLength [] = (Bits 0, 0, [])
+getLength (0:xs) = do
   let (vs, rs) = splitAt 15 xs
   let n = bin2dec vs
-  (Bits n, rs)
-getLength 1:xs = do
+  (Bits n, 16, rs)
+getLength (1:xs) = do
   let (vs, rs) = splitAt 11 xs
   let n = bin2dec vs
-  (Packets n, rs)
+  (Packets n, 12, rs)
 
-parse :: [Int] -> Context
-parse xs = do
-  let (_,_,result) = first (null.(\(_,x) -> x)) $ iterate update ([Start], xs, [])
-  return result
+tokenize :: Bool -> [Int] -> [Token]
+tokenize _ [] = []
+tokenize b s = do
+  let (t, rest, inBody) = getToken b s
+  t:(tokenize inBody rest)
+
+getToken :: Bool -> [Int] -> (Token, [Int], Bool)
+getToken True (i:a:b:c:d:rest) = do
+  (BodyToken [a,b,c,d] 5, rest, i == 1)
+
+getToken False (a:b:c:d:e:f:rest) = do
+  let version = Version $ bin2dec [a,b,c]
+  let t = Type $ bin2dec [d,e,f]
+  if (t == Type 4)
+    then (LiteralToken version 6, rest, True)
+    else handleOperator version t rest
+    where
+      handleOperator v t s = do
+        let (l, c, s') = getLength s
+        (OperatorToken v t l $ 6 + c, s', False)
+getToken _ xs = (EndToken $ length xs, [], False)
+
+getVersion :: Token -> Int
+getVersion (OperatorToken (Version v) t l _) = v
+getVersion (LiteralToken (Version v) _) = v
+getVersion _ = 0
+
+
+justLiterals :: Token -> Bool
+justLiterals (LiteralToken _ _) = True
+justLiterals _ = False
+
+justOperators :: Token -> Bool
+justOperators (OperatorToken _ _ _ _) = True
+justOperators _ = False
+
+justBodies :: Token -> Bool
+justBodies (BodyToken _ _) = True
+justBodies _ = False
+
+justLiteralsAndOperators :: Token -> Bool
+justLiteralsAndOperators t = (justLiterals t) || (justOperators t)
+
+type ConsumedBits = Int
+
+data Type = Type Int deriving (Eq, Show)
+data Version = Version Int deriving (Eq, Show)
+data Length = Bits Int | Packets Int deriving (Eq, Show)
+data Token = LiteralToken Version ConsumedBits  |
+             OperatorToken Version Type Length ConsumedBits |
+             BodyToken [Int] ConsumedBits |
+             EndToken ConsumedBits deriving (Eq, Show)
+
+data Expression = Num Int |
+                  Sum [Expression] |
+                  Product [Expression] |
+                  Minimum [Expression] |
+                  Maximum [Expression] |
+                  GreaterThan [Expression] |
+                  LessThan [Expression] |
+                  EqualTo [Expression] deriving (Eq, Show)
+
+evaluate :: Expression -> Int
+evaluate (Num v) = v
+evaluate (Sum es) = sum $ map evaluate es
+evaluate (Product es) = product $ map evaluate es
+evaluate (Minimum es) = minimum $ map evaluate es
+evaluate (Maximum es) = maximum $ map evaluate es
+evaluate (GreaterThan es) = do
+  let v1 = evaluate $ es !! 0
+  let v2 = evaluate $ es !! 1
+  if (v1 > v2) then 1 else 0
+evaluate (LessThan es) = do
+  let v1 = evaluate $ es !! 0
+  let v2 = evaluate $ es !! 1
+  if (v1 < v2) then 1 else 0
+evaluate (EqualTo es) = do
+  let v1 = evaluate $ es !! 0
+  let v2 = evaluate $ es !! 1
+  if (v1 == v2) then 1 else 0
+
+getBodyValue :: Token -> [Int]
+getBodyValue (BodyToken v _) = v
+
+buildOperator :: Type -> [Expression] -> Expression
+buildOperator (Type 0) = Sum
+buildOperator (Type 1) = Product
+buildOperator (Type 2) = Minimum
+buildOperator (Type 3) = Maximum
+buildOperator (Type 5) = GreaterThan
+buildOperator (Type 6) = LessThan
+buildOperator (Type 7) = EqualTo
+
+
+update :: (Int, [Expression], [Token]) -> (Int, [Expression], [Token])
+update (cbs, es, ts) = do
+  let (e, cbs', ts') = parse ts :: (Expression, ConsumedBits, [Token])
+  (cbs + cbs', es ++ [e], ts')
+
+parseToken :: (Token, [Token]) -> (Expression, ConsumedBits, [Token])
+parseToken (LiteralToken _ cbs, rest) = do
+  let (bodies, rest') = span justBodies rest
+  let cbs' = sum $ map (\(BodyToken _ cbs') -> cbs') bodies
+  let v = bin2dec $ join $ map getBodyValue bodies
+  (Num v, cbs + cbs', rest')
+parseToken (OperatorToken _ t (Bits k) cbs, rest) = do
+  let (cbs', es, rest') = head $
+        dropWhile (\(cbs',_,_) -> cbs' < k) $
+        iterate update (0, [], rest)
+  (buildOperator t es, cbs + cbs', rest')
+parseToken (OperatorToken _ t (Packets k) cbs, rest) = do
+  let (cbs', es, rest') = (iterate update (0, [], rest)) !! k
+  (buildOperator t es, cbs + cbs', rest')
+
+
+parse :: [Token] -> (Expression, ConsumedBits, [Token])
+parse [] = error "No Tokens"
+parse (t:ts) = do
+  parseToken (t, ts)
+
 
 main :: IO ()
 main = do
-  line <- join <$> map charToBin <$> getContents
-  putStrLn $ show $ map bin2char line
+  line <- join <$> map charToBin <$> getContents :: IO [Int]
+  -- let line = join $ map charToBin $ "D8005AC2A8F0"
+  let tokens = tokenize False line
+  let (expression, _, _) = parse tokens
+  let result = evaluate expression
+  putStrLn $ show expression
+  putStrLn $ show result
+
+  -- putStrLn $ show $ sum $ map getVersion $ filter justLiteralsAndOperators tokens
